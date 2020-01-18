@@ -176,7 +176,7 @@ def sync_rest_data(stream_id, config, catalog, state, sub_streams=None):
     time_filter_query = _get_endpoint_time_filter_query(stream_id, config)
     query_string = None
     bookmark = bookmarks.get_bookmark(
-        state=state, tap_stream_id=stream_id, key=time_key
+        state=state, tap_stream_id=stream_id, key=time_key or DEFAULT_TIME_KEY
     )
     if bookmark and time_filter_query:
         query_string = time_filter_query.format(bookmark)
@@ -250,7 +250,7 @@ def sync_rest_data(stream_id, config, catalog, state, sub_streams=None):
             singer.write_bookmark(
                 state,
                 stream_id,
-                time_key,
+                time_key or DEFAULT_TIME_KEY,
                 singer.utils.strftime(max_timestamp),
             )
             counters[stream_id].increment()
