@@ -1,0 +1,4 @@
+
+rest-api.pull_requests.*
+rest-api.commits.*
+rest-api.*.*

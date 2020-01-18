@@ -1,4 +1,115 @@
 selected_tables:
+  assignees:
+    selected_columns:
+    - login
+    - id
+    - url
+    - type
+    - _sdc_repository
+  collaborators:
+    selected_columns:
+    - login
+    - id
+    - url
+    - type
+    - _sdc_repository
+  commits:
+    selected_columns:
+    - _sdc_repository
+    - sha
+    - url
+    - parents
+    - html_url
+    - comments_url
+    - commit
+  comments:
+    selected_columns:
+    - id
+    - node_id
+    - url
+    - home_url
+    - body
+    - html_url
+    - issue_url
+    - author_association
+    - user
+    - created_at
+    - updated_at
+    - _sdc_repository
+  issues:
+    selected_columns:
+    - state
+    - url
+    - labels
+    - repository_url
+    - number
+    - closed_at
+    - labels_url
+    - title
+    - assignee
+    - updated_at
+    - html_url
+    - author_association
+    - locked
+    - events_url
+    - pull_request
+    - node_id
+    - body
+    - comments
+    - created_at
+    - _sdc_repository
+    - user
+    - id
+    - comments_url
+  pull_request_review_comments:
+    selected_columns:
+    - _sdc_repository
+    - id
+    - user
+    - body
+    - node_id
+    - pull_request_review_id
+    - diff_hunk
+    - path
+    - position
+    - original_position
+    - commit_id
+    - original_commit_id
+    - in_reply_to_id
+    - created_at
+    - updated_at
+    - html_url
+    - pull_request_url
+    - assignee
+    - assignees
+    - author_association
+    - base
+    - comments_url
+    - commits_url
+    - diff_url
+    - head
+    - issue_url
+    - labels
+    - locked
+    - merge_commit_sha
+    - milestone
+    - patch_url
+    - requested_reviewers
+    - requested_teams
+    - review_comment_url
+    - review_comments_url
+    - statuses_url
+  pull_request_reviews:
+    selected_columns:
+    - _sdc_repository
+    - id
+    - user
+    - body
+    - state
+    - commit_id
+    - html_url
+    - pull_request_url
+    - submitted_at
   pull_requests:
     selected_columns:
     - _sdc_repository
@@ -14,13 +125,25 @@ selected_tables:
     - closed_at
     - created_at
     - updated_at
+  releases:
+    selected_columns:
+    - _sdc_repository
+    - id
+    - url
+    - html_url
+    - target_commitish
+    - tag_name
+    - name
+    - body
+    - draft
+    - prerelease
+    - author
+    - created_at
+    - published_at
+  stargazers:
+    selected_columns:
+    - _sdc_repository
+    - user
+    - starred_at
+    - user_id
 ignored_tables:
-  - assignees
-  - collaborators
-  - comments
-  - commits
-  - issues
-  - releases
-  - review_comments
-  - reviews
-  - stargazers

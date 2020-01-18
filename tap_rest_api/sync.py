@@ -9,6 +9,14 @@ from singer.utils import strptime_to_utc
 class DependencyException(Exception):
     pass
 
+class AuthException(Exception):
+    pass
+
+
+class NotFoundException(Exception):
+    pass
+
+
 session = requests.Session()
 logger = singer.get_logger()
 
@@ -16,24 +24,31 @@ DOCS_URL = "https://github.com/aaronsteers/tap-rest-api"
 DEFAULT_TIME_KEY = "since"
 
 
-def get_selected_streams(catalog):
+def get_selected_stream_ids(catalog):
     """
-    Gets selected streams.  Checks schema's 'selected'
+    Gets selected stream IDs.  Checks schema's 'selected'
     first -- and then checks metadata, looking for an empty
     breadcrumb and mdata with a 'selected' entry
     """
     selected_streams = []
     for stream in catalog["streams"]:
-        stream_metadata = stream["metadata"]
         if stream["schema"].get("selected", False):
             selected_streams.append(stream["tap_stream_id"])
         else:
+            stream_metadata = stream["metadata"]
             for entry in stream_metadata:
                 # stream metadata will have empty breadcrumb
                 if not entry["breadcrumb"] and entry["metadata"].get("selected", None):
                     selected_streams.append(stream["tap_stream_id"])
     return selected_streams
 
+
+def get_stream_ids(catalog):
+    """
+    Returns an generator which iterates over the list of stream IDs
+    """
+    for stream in catalog["streams"]:
+        yield stream["tap_stream_id"]
 
 
 def _parse_endpoint_config(config_dict, config_key, stream_id, default=None):
@@ -97,7 +112,7 @@ def _get_endpoint_parents(stream_id, config):
 
 def _get_endpoint_children(stream_id, config):
     result = []
-    for possible_child in get_streams(config):
+    for possible_child in config["endpoints"].keys():
         if possible_child == stream_id:
             continue # ignore self
         if stream_id in _get_endpoint_parents(possible_child, config):
@@ -116,27 +131,56 @@ def _get_endpoint_time_filter_query(stream_id, config):
         config_key="time_filter_query", config_dict=config, stream_id=stream_id
     )
 
+def _get_endpoint_extra_headers(stream_id, config):
+    return _parse_endpoint_config(
+        config_key="extra_headers", config_dict=config, stream_id=stream_id
+    ) or {}
 
-def sync_rest_data(stream_id, catalog, state, sub_streams=None):
+
+def authed_get(source, url, headers={}):
+    with metrics.http_request_timer(source) as timer:
+        session.headers.update(headers)
+        resp = session.request(method="get", url=url)
+        if resp.status_code == 401:
+            raise AuthException(f"Error while fetching '{source}' from '{url}': {resp.text}")
+        if resp.status_code == 403:
+            raise AuthException(f"Error while fetching '{source}' from '{url}': {resp.text}")
+        if resp.status_code == 404:
+            raise NotFoundException(f"Error while fetching '{source}' from '{url}': {resp.text}")
+        timer.tags[metrics.Tag.http_status_code] = resp.status_code
+        return resp
+
+
+def authed_get_all_pages(source, url, headers={}):
+    while True:
+        r = authed_get(source, url, headers)
+        r.raise_for_status()
+        yield r
+        if "next" in r.links:
+            url = r.links["next"]["url"]
+        else:
+            break
+
+
+def sync_rest_data(stream_id, config, catalog, state, sub_streams=None):
     """
     Generic function to get (sync) data from a REST API endpoint
     Arguments:
-    - sub_streams should be None or a list of child stream names to be synced
+    - sub_streams should be None or a list of child stream IDs to be synced
     """
-    config = _get_config()
-
     schema = _get_schema(stream_id, catalog)
     mdata = _get_metadata(stream_id, catalog)
-    stream_key = _get_endpoint_key(stream_id)
-    time_key_sort = _parse_endpoint_config(config, "time_key_sort", stream_name)
+    stream_key = _get_endpoint_key(stream_id, config)
+    time_key_sort = _parse_endpoint_config(config, "time_key_sort", stream_id)
     time_key = _get_endpoint_time_key(stream_id, config)
     time_filter_query = _get_endpoint_time_filter_query(stream_id, config)
     query_string = None
     bookmark = bookmarks.get_bookmark(
-        state=state, tap_stream_id=stream_id, key=time_key or DEFAULT_TIME_KEY
+        state=state, tap_stream_id=stream_id, key=time_key
     )
     if bookmark and time_filter_query:
         query_string = time_filter_query.format(bookmark)
+        logger.info(f"Filtering '{stream_id}' API call using bookmark value: {query_string}")
     max_timestamp = None
     sub_streams = [
         x for x in _get_endpoint_children(stream_id, config)
@@ -146,26 +190,30 @@ def sync_rest_data(stream_id, catalog, state, sub_streams=None):
         stream_id: metrics.record_counter(stream_id)
         for stream_id in [stream_id] + sub_streams
     }
-    for response in authed_get_all_pages(
-        stream_id, _get_endpoint_url(stream_id, config, query_string)
-    ):
+    responses = authed_get_all_pages(
+        stream_id, _get_endpoint_url(stream_id, config, query_string), headers=_get_endpoint_extra_headers(stream_id, config)
+    )
+    # logger.info([x.json() for x in responses])
+    for response in responses:
         elements = response.json()
         extraction_time = singer.utils.now()
         for element in elements:
+            if time_key and time_key not in element:
+                raise RuntimeError(f"Could not locate time key '{time_key}' for '{stream_id}'")
             timestamp = (
                 strptime_to_utc(element[time_key]) if time_key else extraction_time
             )
             max_timestamp = (
                 timestamp if not max_timestamp else max(max_timestamp, timestamp)
             )
-            if bookmark_value:
-                bookmark_time = singer.utils.strptime_to_utc(bookmark_value)
+            if bookmark:
+                bookmark_time = singer.utils.strptime_to_utc(bookmark)
             else:
                 bookmark_time = 0
-            if time_key_sort == "desc" and bookmark_time:
+            if time_key and time_key_sort == "desc" and bookmark_time:
                 if singer.utils.strptime_to_utc(element.get(time_key)) < bookmark_time:
                     logging.info(
-                        f"Data from '{stream_name}' is sorted descending on "
+                        f"Data from '{stream_id}' is sorted descending on "
                         f"time key '{time_key_name}' and the current record's timestamp "
                         f"('{time_key_value}') is older than the available bookmark "
                         f"('{bookmark_time}'). Skipping remaining records in stream."
@@ -179,13 +227,14 @@ def sync_rest_data(stream_id, catalog, state, sub_streams=None):
             if sub_streams:
                 parent_key_value = element[stream_key]
                 for child_stream in sub_streams:
-                    for element in get_child_elements(
+                    for element in get_rest_data_child_elements(
                         stream_id=child_stream,
+                        config=config,
                         parent_key_value=parent_key_value,
                         catalog=catalog,
                         state=state,
                     ):
-                        time_key = _get_endpoint_time_key(child_stream, config)
+                        child_time_key = _get_endpoint_time_key(child_stream, config)
                         singer.write_record(
                             child_stream,
                             element,
@@ -201,18 +250,18 @@ def sync_rest_data(stream_id, catalog, state, sub_streams=None):
             singer.write_bookmark(
                 state,
                 stream_id,
-                time_key or DEFAULT_TIME_KEY,
+                time_key,
                 singer.utils.strftime(max_timestamp),
             )
             counters[stream_id].increment()
     return state
 
 
-def get_rest_data_child_elements(stream_id, parent_key_value, catalog, state):
+def get_rest_data_child_elements(stream_id, config, parent_key_value, catalog, state):
     schema = _get_schema(stream_id, catalog)
     mdata = _get_metadata(stream_id, catalog)
     for response in authed_get_all_pages(
-        stream_id, _get_endpoint_url(stream_id, config, parent_key=parent_key_value)
+        stream_id, _get_endpoint_url(stream_id, config, parent_keys=[parent_key_value])
     ):
         elements = response.json()
         extraction_time = singer.utils.now()
@@ -250,7 +299,7 @@ def do_sync(config, state, catalog):
     access_token = config["access_token"]
     session.headers.update({"authorization": "token " + access_token})
     # get selected streams, make sure stream dependencies are met
-    selected_stream_ids = get_selected_streams(catalog)
+    selected_stream_ids = get_selected_stream_ids(catalog)
     _validate_dependencies(selected_stream_ids, config)
     singer.write_state(state)
     logger.info("Starting sync from API")
@@ -276,18 +325,19 @@ def do_sync(config, state, catalog):
                     sub_stream["schema"],
                     sub_stream["key_properties"],
                 )
-            state = sync_rest_data(stream_id, catalog, state, sub_streams)
+            state = sync_rest_data(stream_id, config, catalog, state, sub_stream_ids)
             singer.write_state(state)
 
 
 def _validate_dependencies(selected_stream_ids, config):
     errs = []
     for stream_id in selected_stream_ids:
-        parent = _get_endpoint_parents(stream_id, config)
-        if parent and parent not in selected_stream_ids:
-            errs.append(
-                f"Unable to extract '{stream_id}' data. "
-                f"To receive '{stream_id}' data, you also need to select '{parent}'."
-            )
+        parents = _get_endpoint_parents(stream_id, config)
+        for parent in parents:
+            if parent and (parent not in selected_stream_ids):
+                errs.append(
+                    f"Unable to extract '{stream_id}' data. "
+                    f"To receive '{stream_id}' data, you also need to select '{parent}'."
+                )
     if errs:
         raise DependencyException(" ".join(errs))
